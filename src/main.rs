@@ -4,6 +4,7 @@
 // Not all configuration values are used yet.
 #[allow(dead_code)]
 mod config;
+pub mod lock;
 
 use std::{path::PathBuf, process::ExitCode};
 

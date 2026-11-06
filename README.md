@@ -34,7 +34,8 @@ url = "https://github.com/go-acme/lego/releases"   # required
 name = "lego"                # required: file name of the installed binary
 # dir = "..."                # default: ~/.local/bin (root: /usr/local/bin)
 # mode = 0o755               # permission bits of the installed binary
-# runtime_dir = "..."        # lock file; default: $XDG_RUNTIME_DIR/grm
+# runtime_dir = "..."        # lock file `.<name>.lock`;
+                             # default: $XDG_RUNTIME_DIR/grm
                              # (root: /run/grm)
 # data_dir = "..."           # record of installed programs;
                              # default: $XDG_DATA_HOME/grm or

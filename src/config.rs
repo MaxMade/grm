@@ -19,6 +19,7 @@
 //! locations otherwise. All values are validated while loading.
 
 use std::{
+    ffi::OsString,
     fmt::{self, Display},
     io,
     path::{Path, PathBuf},
@@ -26,6 +27,8 @@ use std::{
 
 use regex::Regex;
 use serde::Deserialize;
+
+use crate::lock::LockFile;
 
 /// Configuration of a single release, loaded from one TOML file.
 #[derive(Debug, Deserialize)]
@@ -39,6 +42,24 @@ pub struct Config {
 
     /// How version numbers are extracted (`[version]`).
     pub version: Version,
+}
+
+impl LockFile for Config {
+    /// `<runtime_dir>/.<name>.lock`, so that configurations installing
+    /// different binaries can be processed concurrently, even though they
+    /// share the default runtime directory.
+    fn path(&self) -> PathBuf {
+        let name = self
+            .installation
+            .path
+            .file_name()
+            .expect("installation name is validated while loading");
+
+        let mut file = OsString::from(".");
+        file.push(name);
+        file.push(".lock");
+        self.installation.runtime_dir.join(file)
+    }
 }
 
 /// The `[repository]` section.
@@ -140,8 +161,8 @@ pub struct Installation {
     /// Default: `0o755`. Must not exceed `0o7777`.
     pub mode: u32,
 
-    /// Directory for the lock file that prevents concurrent runs (similar to
-    /// apt's lock).
+    /// Directory for the lock file `.<name>.lock` that prevents concurrent
+    /// runs for the same binary (similar to apt's lock).
     ///
     /// Default: `/run/grm` (root) or `$XDG_RUNTIME_DIR/grm` (user).
     pub runtime_dir: PathBuf,
@@ -561,6 +582,12 @@ mod tests {
         assert_eq!(RepositoryType::from_url("https://x.org/?github.com"), None);
         assert_eq!(RepositoryType::from_url("https://x.org/github.com"), None);
         assert_eq!(RepositoryType::from_url(""), None);
+    }
+
+    #[test]
+    fn lock_file_is_named_after_binary() {
+        let config = parse(FULL).unwrap();
+        assert_eq!(LockFile::path(&config), Path::new("/tmp/run/.tool.lock"));
     }
 
     #[test]
