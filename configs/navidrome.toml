@@ -1,0 +1,10 @@
+[repository]
+url = "https://github.com/navidrome/navidrome/releases"
+
+[installation]
+name = "navidrome"
+
+[asset]
+version = '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
+target = 'navidrome_${major}.${minor}.${patch}_linux_amd64.tar.gz'
+unpack = 'navidrome'
