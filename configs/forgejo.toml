@@ -1,0 +1,19 @@
+# grm configuration for Forgejo (https://forgejo.org), a self-hosted
+# software forge. Released on Codeberg, a Forgejo instance. See lego.toml for
+# a description of all keys.
+
+[repository]
+url = "https://codeberg.org/forgejo/forgejo"
+
+[installation]
+name = "forgejo"
+
+[asset]
+# Tags look like `v17.0.1`. Several release lines are maintained in parallel
+# (e.g. v15 as long-term support), and the highest version wins. To stay on
+# one line, fix its major version, e.g.
+# '^v(?<major>15)\.(?<minor>\d+)\.(?<patch>\d+)$'.
+version = '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
+# A plain binary of about 120 MB, e.g. `forgejo-17.0.1-linux-amd64`. The
+# smaller `.xz` variant is not supported for unpacking.
+target = 'forgejo-${major}.${minor}.${patch}-linux-amd64'

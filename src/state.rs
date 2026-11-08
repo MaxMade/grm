@@ -35,7 +35,9 @@ use tempfile::TempDir;
 use crate::{
     backend::{
         download::{self, Backend, Version},
-        github::{self, Github},
+        forgejo::Forgejo,
+        github::Github,
+        release,
     },
     config::{Config, RepositoryType},
     lock::{Lock, LockFile, LockGuard},
@@ -75,8 +77,8 @@ pub enum Error {
     /// installed.
     Unmanaged(PathBuf),
 
-    /// The newest release could not be downloaded from GitHub.
-    Github(github::Error),
+    /// The newest release could not be downloaded.
+    Download(release::Error),
 }
 
 /// A configured package.
@@ -137,7 +139,7 @@ impl Display for Error {
                 "{} exists, but was not installed by grm; remove it first to install the package",
                 path.display()
             ),
-            Self::Github(error) => error.fmt(f),
+            Self::Download(error) => error.fmt(f),
         }
     }
 }
@@ -147,7 +149,7 @@ impl std::error::Error for Error {
         match self {
             Self::Io { source, .. } => Some(source),
             // Displayed as this error, so the source is the inner error's
-            Self::Github(error) => std::error::Error::source(error),
+            Self::Download(error) => std::error::Error::source(error),
             Self::InvalidRecord(_)
             | Self::UnknownPackage(_)
             | Self::AmbiguousPackage(_)
@@ -156,9 +158,9 @@ impl std::error::Error for Error {
     }
 }
 
-impl From<github::Error> for Error {
-    fn from(error: github::Error) -> Self {
-        Self::Github(error)
+impl From<release::Error> for Error {
+    fn from(error: release::Error) -> Self {
+        Self::Download(error)
     }
 }
 
@@ -357,6 +359,7 @@ fn install_newest(
 
     let download = match config.repository.ty {
         RepositoryType::Github => Github::download(config, installed, tmp_dir.path())?,
+        RepositoryType::Forgejo => Forgejo::download(config, installed, tmp_dir.path())?,
     };
     let Some(download) = download else {
         return Ok(None);

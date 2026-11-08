@@ -1,7 +1,8 @@
 # Git Release Manager (`grm`)
 
-`grm` installs and updates releases published in Git repositories (currently
-GitHub). Each managed release is described by one TOML configuration file.
+`grm` installs and updates releases published in Git repositories on GitHub
+or Forgejo instances (e.g. Codeberg). Each managed release is described by
+one TOML configuration file.
 
 ## Usage
 
@@ -33,7 +34,8 @@ dependencies (e.g. `RUST_LOG=ureq=debug`).
 
 If `GITHUB_TOKEN` is set, it is sent to the GitHub API (and only there). This
 raises GitHub's limit of 60 unauthenticated requests per hour and allows
-private repositories.
+private repositories. No credentials are sent to Forgejo instances, so only
+public repositories are supported there.
 
 `grm` exits with a non-zero status if the configuration directory cannot be
 read, any configuration file is invalid, or any package fails. Valid files and
@@ -48,7 +50,8 @@ order. The default directory is `/etc/grm` when running as root, otherwise
 ```toml
 [repository]
 url = "https://github.com/go-acme/lego/releases"   # required
-# type = "github"            # derived from the URL if omitted
+# type = "github"            # "github" or "forgejo"; derived for github.com,
+                             # codeberg.org and code.forgejo.org
 
 [installation]
 name = "lego"                # required: file name of the installed binary
@@ -78,10 +81,17 @@ See [`configs/`](configs/) for examples.
 ## Security
 
 Downloads use HTTPS only and must match the size reported by the hosting
-service. When unpacking, only the configured file is extracted, links and
+service (or are limited to 2 GiB if it is unknown, as for external assets on
+Forgejo). When unpacking, only the configured file is extracted, links and
 directories are rejected, and the extracted file is limited to 1 GiB.
 Releases are not verified against checksums or signatures, so `grm` trusts
 the repository's maintainers and hosting service.
+
+On Forgejo, the download URL of an asset is taken from the server and may
+point to any HTTPS host, since Forgejo supports external assets. So whoever
+publishes a release can make `grm` send a request to any host it can reach,
+including ones on the local network. Only configure repositories whose
+publishers you trust.
 
 ## License
 

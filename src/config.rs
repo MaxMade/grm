@@ -112,7 +112,16 @@ impl TryFrom<RawRepository> for Repository {
 pub enum RepositoryType {
     /// GitHub (`github.com`).
     Github,
+
+    /// A Forgejo instance, e.g. Codeberg (`codeberg.org`). Since Forgejo is
+    /// self-hosted, the type is only derived for well-known instances (see
+    /// [`FORGEJO_HOSTS`]) and must be set explicitly for others.
+    Forgejo,
 }
+
+/// Hosts known to run Forgejo, for which the repository type is derived.
+/// Only exact matches count, since subdomains may run anything.
+pub const FORGEJO_HOSTS: [&str; 2] = ["codeberg.org", "code.forgejo.org"];
 
 impl RepositoryType {
     /// Guesses the hosting service from the host part of `url`.
@@ -120,6 +129,8 @@ impl RepositoryType {
         let host = url_host(url)?.to_ascii_lowercase();
         if host == "github.com" || host.ends_with(".github.com") {
             Some(Self::Github)
+        } else if FORGEJO_HOSTS.contains(&host.as_str()) {
+            Some(Self::Forgejo)
         } else {
             None
         }
@@ -130,6 +141,7 @@ impl Display for RepositoryType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Github => write!(f, "github"),
+            Self::Forgejo => write!(f, "forgejo"),
         }
     }
 }
@@ -907,6 +919,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicit_forgejo_type() {
+        let config = parse(
+            &FULL
+                .replace(
+                    "https://example.org/releases",
+                    "https://git.example.org/a/b",
+                )
+                .replace("type = \"github\"", "type = \"forgejo\""),
+        )
+        .unwrap();
+        assert_eq!(config.repository.ty, RepositoryType::Forgejo);
+        assert_eq!(config.repository.ty.to_string(), "forgejo");
+        assert!(parse(&FULL.replace("type = \"github\"", "type = \"gitea\"")).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_repository_type() {
         assert!(parse(&FULL.replace("type = \"github\"", "")).is_err());
     }
@@ -922,6 +950,24 @@ mod tests {
             github
         );
         assert_eq!(RepositoryType::from_url("github.com/a/b"), github);
+
+        let forgejo = Some(RepositoryType::Forgejo);
+        assert_eq!(
+            RepositoryType::from_url("https://codeberg.org/a/b"),
+            forgejo
+        );
+        assert_eq!(
+            RepositoryType::from_url("https://Codeberg.org/a/b"),
+            forgejo
+        );
+        assert_eq!(
+            RepositoryType::from_url("https://code.forgejo.org/a"),
+            forgejo
+        );
+        // Only exact hosts, since other instances may run anything
+        assert_eq!(RepositoryType::from_url("https://git.codeberg.org/a"), None);
+        assert_eq!(RepositoryType::from_url("https://notcodeberg.org/a"), None);
+        assert_eq!(RepositoryType::from_url("https://git.example.org/a"), None);
 
         assert_eq!(RepositoryType::from_url("https://notgithub.com/a"), None);
         assert_eq!(RepositoryType::from_url("https://x.org/?github.com"), None);
