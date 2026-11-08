@@ -16,6 +16,10 @@ grm [--configs <DIR>] [-v...]
 
 `RUST_LOG` overrides the log level selected with `-v`.
 
+If `GITHUB_TOKEN` is set, it is sent to the GitHub API (and only there). This
+raises GitHub's limit of 60 unauthenticated requests per hour and allows
+private repositories.
+
 `grm` exits with a non-zero status if the configuration directory cannot be
 read or any configuration file is invalid. Valid files are still processed.
 
@@ -41,14 +45,27 @@ name = "lego"                # required: file name of the installed binary
                              # default: $XDG_DATA_HOME/grm or
                              # ~/.local/share/grm (root: /var/lib/grm)
 
-[version]
+[asset]
 # Named capture groups `major`, `minor` and `patch` are required.
-regex = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)'   # required
+version = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)' # required
+# Release asset to install; `${name}` is replaced by the group `name`.
+target = 'lego_v${major}.${minor}.${patch}_linux_amd64.tar.gz' # required
+# File to install from a .tar.gz, .tgz or .zip asset (path inside the archive;
+# may use `${name}` like `target`). If omitted, the asset itself is installed.
+unpack = 'lego'
 ```
 
 All values are validated when loading, and unknown keys are rejected to catch
 typos. `runtime_dir` and `data_dir` are created if they do not exist.
 See [`configs/`](configs/) for examples.
+
+## Security
+
+Downloads use HTTPS only and must match the size reported by the hosting
+service. When unpacking, only the configured file is extracted, links and
+directories are rejected, and the extracted file is limited to 1 GiB.
+Releases are not verified against checksums or signatures, so `grm` trusts
+the repository's maintainers and hosting service.
 
 ## License
 

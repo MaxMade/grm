@@ -10,8 +10,10 @@
 //! [installation]
 //! name = "lego"
 //!
-//! [version]
-//! regex = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)'
+//! [asset]
+//! version = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)'
+//! target = 'lego_v${major}.${minor}.${patch}_linux_amd64.tar.gz'
+//! unpack = 'lego'
 //! ```
 //!
 //! Optional values that are missing from a file are filled in while loading,
@@ -22,10 +24,10 @@ use std::{
     ffi::OsString,
     fmt::{self, Display},
     io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
-use regex::Regex;
+use regex::{Captures, Regex};
 use serde::Deserialize;
 
 use crate::lock::LockFile;
@@ -40,8 +42,8 @@ pub struct Config {
     /// Where and how a release is installed (`[installation]`).
     pub installation: Installation,
 
-    /// How version numbers are extracted (`[version]`).
-    pub version: Version,
+    /// Which release assets are installed (`[asset]`).
+    pub asset: Asset,
 }
 
 impl LockFile for Config {
@@ -234,39 +236,201 @@ impl Installation {
     }
 }
 
-/// The `[version]` section.
+/// The `[asset]` section.
 #[derive(Debug, Deserialize)]
-#[serde(try_from = "RawVersion")]
-pub struct Version {
+#[serde(try_from = "RawAsset")]
+pub struct Asset {
     /// Regular expression matching a release's version. It contains the named
     /// capture groups listed in [`VERSION_GROUPS`].
-    pub regex: Regex,
+    pub version: Regex,
+
+    /// File name of the release asset to install, as a template that may
+    /// refer to the capture groups of [`Asset::version`] (see
+    /// [`Asset::target`]).
+    ///
+    /// The syntax is that of [`Captures::expand`]: `$name` or `${name}` is
+    /// replaced by the named group, `$1` or `${1}` by a numbered group, and
+    /// `$$` is a literal `$`. Use the braced form if the reference is
+    /// followed by a letter, digit or `_`, e.g. `${major}_linux` rather than
+    /// `$major_linux`. Every referenced group must exist in `version`.
+    pub target: String,
+
+    /// File to extract from the asset if it is an archive (key `unpack`).
+    ///
+    /// Optional; if missing, the asset itself is installed.
+    pub unpack: Option<Unpack>,
 }
 
-/// Named capture groups that [`Version::regex`] must contain.
+impl Asset {
+    /// Returns the file name of the release asset for a version matched by
+    /// [`Asset::version`], i.e. [`Asset::target`] with its group references
+    /// replaced by `captures`.
+    pub fn target(&self, captures: &Captures<'_>) -> String {
+        expand(&self.target, captures)
+    }
+}
+
+/// The `unpack` key of `[asset]`.
+#[derive(Debug)]
+pub struct Unpack {
+    /// Format of the archive, derived from the extension of
+    /// [`Asset::target`]: `.tar.gz` or `.tgz` for a gzip-compressed tar
+    /// archive, `.zip` for a ZIP archive.
+    pub archive: ArchiveFormat,
+
+    /// Path of the file inside the archive, e.g. `tool` or
+    /// `tool-${major}.${minor}.${patch}/bin/tool`, as a template like
+    /// [`Asset::target`] (see [`Unpack::file`]). It must be relative and
+    /// must not contain `..`; a leading `./` is optional.
+    pub file: String,
+}
+
+impl Unpack {
+    /// Returns the path of the file inside the archive for a version matched
+    /// by [`Asset::version`], i.e. [`Unpack::file`] with its group references
+    /// replaced by `captures`.
+    pub fn file(&self, captures: &Captures<'_>) -> String {
+        expand(&self.file, captures)
+    }
+}
+
+/// Supported archive formats for [`Unpack`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    /// A gzip-compressed tar archive (`.tar.gz`, `.tgz`).
+    TarGz,
+    /// A ZIP archive (`.zip`).
+    Zip,
+}
+
+impl ArchiveFormat {
+    /// Determines the format from the extension of the file `name`.
+    fn from_name(name: &str) -> Option<Self> {
+        let name = name.to_ascii_lowercase();
+        if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+            Some(Self::TarGz)
+        } else if name.ends_with(".zip") {
+            Some(Self::Zip)
+        } else {
+            None
+        }
+    }
+}
+
+/// Replaces the group references in `template` by `captures`.
+fn expand(template: &str, captures: &Captures<'_>) -> String {
+    let mut expanded = String::new();
+    captures.expand(template, &mut expanded);
+    expanded
+}
+
+/// Named capture groups that [`Asset::version`] must contain.
 pub const VERSION_GROUPS: [&str; 3] = ["major", "minor", "patch"];
 
-/// `[version]` as written in the file, before validation.
+/// `[asset]` as written in the file, before validation.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawVersion {
-    regex: String,
+struct RawAsset {
+    version: String,
+    target: String,
+    unpack: Option<String>,
 }
 
-impl TryFrom<RawVersion> for Version {
+impl TryFrom<RawAsset> for Asset {
     type Error = Error;
 
-    fn try_from(raw: RawVersion) -> Result<Self, Self::Error> {
-        let regex = Regex::new(&raw.regex).map_err(Error::InvalidRegex)?;
+    fn try_from(raw: RawAsset) -> Result<Self, Self::Error> {
+        let version = Regex::new(&raw.version).map_err(Error::InvalidRegex)?;
 
         for group in VERSION_GROUPS {
-            if !regex.capture_names().flatten().any(|name| name == group) {
+            if !version.capture_names().flatten().any(|name| name == group) {
                 return Err(Error::MissingCaptureGroup(group));
             }
         }
 
-        Ok(Self { regex })
+        if raw.target.is_empty() {
+            return Err(Error::EmptyTarget);
+        }
+        check_template_groups("target", &raw.target, &version)?;
+
+        let unpack = match raw.unpack {
+            Some(file) => {
+                let archive = ArchiveFormat::from_name(&raw.target)
+                    .ok_or_else(|| Error::UnknownArchiveFormat(raw.target.clone()))?;
+
+                // Only plain components, apart from `.`, so the path names a
+                // file inside the archive
+                let path = Path::new(&file);
+                let is_valid = path.file_name().is_some()
+                    && path
+                        .components()
+                        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+                if !is_valid {
+                    return Err(Error::InvalidUnpack(file));
+                }
+                check_template_groups("unpack", &file, &version)?;
+
+                Some(Unpack { archive, file })
+            }
+            None => None,
+        };
+
+        Ok(Self {
+            version,
+            target: raw.target,
+            unpack,
+        })
     }
+}
+
+/// Checks that every group referenced by `template`, the value of `key`,
+/// exists in the regex `version`.
+fn check_template_groups(key: &'static str, template: &str, version: &Regex) -> Result<(), Error> {
+    for group in template_groups(template) {
+        let exists = match group.parse::<usize>() {
+            Ok(index) => index < version.captures_len(),
+            Err(_) => version.capture_names().flatten().any(|name| name == group),
+        };
+        if !exists {
+            return Err(Error::UnknownGroup {
+                key,
+                group: group.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Returns the capture group names (or indices) referenced by `template`,
+/// following the syntax of [`Captures::expand`].
+fn template_groups(template: &str) -> Vec<&str> {
+    let mut groups = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('$') {
+        rest = &rest[start + 1..];
+        if let Some(after) = rest.strip_prefix('$') {
+            // `$$` is a literal `$`
+            rest = after;
+        } else if let Some(braced) = rest.strip_prefix('{') {
+            // `${name}`, where `${}` refers to the (nonexistent) empty name;
+            // without a closing brace, the `$` is kept literally
+            if let Some(end) = braced.find('}') {
+                groups.push(&braced[..end]);
+                rest = &braced[end + 1..];
+            }
+        } else {
+            // `$name` takes the longest run of letters, digits and `_`; a `$`
+            // not followed by one is kept literally
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            if end > 0 {
+                groups.push(&rest[..end]);
+                rest = &rest[end..];
+            }
+        }
+    }
+    groups
 }
 
 /// Errors while loading the configuration or preparing its directories.
@@ -300,11 +464,24 @@ pub enum Error {
     /// `mode` is not a valid permission mode.
     InvalidMode(u32),
 
-    /// `regex` is not a valid regular expression.
+    /// `version` is not a valid regular expression.
     InvalidRegex(regex::Error),
 
-    /// `regex` lacks one of the [`VERSION_GROUPS`].
+    /// `version` lacks one of the [`VERSION_GROUPS`].
     MissingCaptureGroup(&'static str),
+
+    /// `target` is empty.
+    EmptyTarget,
+
+    /// `target` or `unpack` refers to a capture group that `version` does
+    /// not have.
+    UnknownGroup { key: &'static str, group: String },
+
+    /// `unpack` is set, but `target` has no supported archive extension.
+    UnknownArchiveFormat(String),
+
+    /// `unpack` is not a relative path to a file.
+    InvalidUnpack(String),
 }
 
 impl Display for Error {
@@ -335,10 +512,23 @@ impl Display for Error {
             Self::InvalidMode(mode) => {
                 write!(f, "invalid mode {mode:#o}: must not exceed 0o7777")
             }
-            Self::InvalidRegex(error) => write!(f, "invalid regex: {error}"),
+            Self::InvalidRegex(error) => write!(f, "invalid version regex: {error}"),
             Self::MissingCaptureGroup(group) => {
-                write!(f, "regex lacks the named capture group `{group}`")
+                write!(f, "version regex lacks the named capture group `{group}`")
             }
+            Self::EmptyTarget => write!(f, "target must not be empty"),
+            Self::UnknownGroup { key, group } => write!(
+                f,
+                "{key} refers to `{group}`, which is not a capture group of the version regex"
+            ),
+            Self::UnknownArchiveFormat(target) => write!(
+                f,
+                "unable to unpack \"{target}\": target must end in .tar.gz, .tgz or .zip"
+            ),
+            Self::InvalidUnpack(file) => write!(
+                f,
+                "invalid unpack \"{file}\": must be a relative path to a file without `..`"
+            ),
         }
     }
 }
@@ -355,7 +545,11 @@ impl std::error::Error for Error {
             | Self::UnknownRepositoryType(_)
             | Self::InvalidName(_)
             | Self::InvalidMode(_)
-            | Self::MissingCaptureGroup(_) => None,
+            | Self::MissingCaptureGroup(_)
+            | Self::EmptyTarget
+            | Self::UnknownGroup { .. }
+            | Self::UnknownArchiveFormat(_)
+            | Self::InvalidUnpack(_) => None,
         }
     }
 }
@@ -516,8 +710,10 @@ mod tests {
         runtime_dir = "/tmp/run"
         data_dir = "/tmp/data"
 
-        [version]
-        regex = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)'
+        [asset]
+        version = '(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)'
+        target = 'tool_v${major}.$minor.${3}_linux.tar.gz'
+        unpack = './tool-$major/tool'
     "#;
 
     fn parse(config: &str) -> Result<Config, toml::de::Error> {
@@ -530,7 +726,7 @@ mod tests {
         assert_eq!(config.repository.ty, RepositoryType::Github);
         assert_eq!(config.installation.path, Path::new("/opt/bin/tool"));
         assert_eq!(config.installation.mode, 0o700);
-        assert!(config.version.regex.is_match("v1.2.3"));
+        assert!(config.asset.version.is_match("v1.2.3"));
     }
 
     #[test]
@@ -559,6 +755,155 @@ mod tests {
     #[test]
     fn rejects_regex_without_capture_group() {
         assert!(parse(&FULL.replace("?<patch>", "")).is_err());
+    }
+
+    #[test]
+    fn expands_target() {
+        let config = parse(FULL).unwrap();
+        let captures = config.asset.version.captures("v1.22.333").unwrap();
+        assert_eq!(
+            config.asset.target(&captures),
+            "tool_v1.22.333_linux.tar.gz"
+        );
+    }
+
+    #[test]
+    fn expands_unpack() {
+        let config = parse(FULL).unwrap();
+        let captures = config.asset.version.captures("v1.22.333").unwrap();
+        let unpack = config.asset.unpack.unwrap();
+        assert_eq!(unpack.archive, ArchiveFormat::TarGz);
+        assert_eq!(unpack.file(&captures), "./tool-1/tool");
+    }
+
+    #[test]
+    fn unpack_is_optional() {
+        let config = parse(&FULL.replace("unpack = './tool-$major/tool'", "")).unwrap();
+        assert!(config.asset.unpack.is_none());
+    }
+
+    #[test]
+    fn derives_archive_format_from_target() {
+        for (target, format) in [
+            ("tool.tar.gz", Some(ArchiveFormat::TarGz)),
+            ("tool.TGZ", Some(ArchiveFormat::TarGz)),
+            ("tool.zip", Some(ArchiveFormat::Zip)),
+            ("tool.tar.xz", None),
+            ("tool", None),
+        ] {
+            assert_eq!(ArchiveFormat::from_name(target), format, "{target}");
+        }
+
+        // Unpacking requires a known format, but plain targets are fine
+        let config = FULL.replace("_linux.tar.gz", "_linux");
+        assert!(parse(&config).is_err());
+        assert!(parse(&config.replace("unpack = './tool-$major/tool'", "")).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_unpack() {
+        for file in [
+            "",
+            ".",
+            "/tool",
+            "../tool",
+            "a/../tool",
+            "tool/..",
+            "${mayor}/tool",
+            "${}",
+        ] {
+            let config = FULL.replace("./tool-$major/tool", file);
+            assert!(parse(&config).is_err(), "accepted unpack {file:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_target() {
+        let target = "target = 'tool_v${major}.$minor.${3}_linux.tar.gz'";
+        assert!(parse(&FULL.replace(target, "")).is_err());
+        assert!(parse(&FULL.replace(target, "target = ''")).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_target_group() {
+        for group in ["${mayor}", "$4", "${4}", "$major_", "${}"] {
+            let config = FULL.replace("${major}", group);
+            assert!(parse(&config).is_err(), "accepted {group:?}");
+        }
+    }
+
+    #[test]
+    fn finds_template_groups() {
+        assert_eq!(template_groups("a${x}b$y.c$1"), ["x", "y", "1"]);
+        assert_eq!(template_groups("$y_z-${a b}"), ["y_z", "a b"]);
+        assert_eq!(template_groups("${}"), [""]);
+        // Literal `$`s
+        assert!(template_groups("$$x $ $- ${x").is_empty());
+        assert!(template_groups("plain").is_empty());
+    }
+
+    /// `template_groups` must find exactly the references that
+    /// `Captures::expand` replaces; otherwise, a typo could slip through
+    /// validation and silently expand to an empty string.
+    #[test]
+    fn template_groups_match_regex_expand() {
+        let regex = Regex::new("").unwrap();
+        let captures = regex.captures("").unwrap();
+        for template in [
+            "plain",
+            "$x",
+            "${x}",
+            "$x.$y",
+            "a${x}b",
+            "$x_y",
+            "$$x",
+            "$$$x",
+            "$",
+            "x$",
+            "$-",
+            "${}",
+            "${x",
+            "${x y}",
+            "$1",
+            "${1}a",
+            "$01",
+            "$1a",
+            "${+1}",
+            "${x}${y}$z",
+        ] {
+            // Every reference is unknown to a regex without groups, so it
+            // expands to nothing; without references, only `$$` changes
+            let groups = template_groups(template);
+            let expanded = expand(template, &captures);
+
+            // Removing all references (and turning `$$` into `$`) by hand
+            // must give the same result, unless the only references are to
+            // group 0, which is the empty match here
+            let groups_known = groups.iter().all(|group| {
+                group
+                    .parse::<usize>()
+                    .is_ok_and(|index| index < regex.captures_len())
+            });
+            let mut manual = template.to_owned();
+            for group in &groups {
+                for form in [format!("${{{group}}}"), format!("${group}")] {
+                    if let Some(position) = manual.find(&form) {
+                        manual.replace_range(position..position + form.len(), "");
+                        break;
+                    }
+                }
+            }
+            let manual = manual.replace("$$", "$");
+            if groups_known || groups.is_empty() {
+                assert_eq!(expanded, manual, "{template:?} with groups {groups:?}");
+            }
+
+            // A template without references expands to itself (apart from
+            // `$$`), so nothing can be silently dropped
+            if groups.is_empty() {
+                assert_eq!(expanded, template.replace("$$", "$"), "{template:?}");
+            }
+        }
     }
 
     #[test]

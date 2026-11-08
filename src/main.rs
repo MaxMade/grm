@@ -2,6 +2,7 @@
 //! repositories, as described by one configuration file per release.
 
 // Not all configuration values are used yet.
+pub mod backend;
 #[allow(dead_code)]
 mod config;
 pub mod lock;
