@@ -69,7 +69,11 @@ impl Backend for Github {
     /// file named by [`Asset::unpack`] from it if set. Files are named after
     /// the asset or the extracted file; see [`Backend::download`] for the
     /// requirements on `tmp_dir`.
-    fn download<P: AsRef<Path>>(config: &Config, tmp_dir: P) -> Result<Download, Self::Error> {
+    fn download<P: AsRef<Path>>(
+        config: &Config,
+        installed: Option<&Version>,
+        tmp_dir: P,
+    ) -> Result<Option<Download>, Self::Error> {
         let (owner, repo) = parse_repository_url(&config.repository.url)
             .ok_or_else(|| Error::InvalidUrl(config.repository.url.clone()))?;
         let client = Client::new();
@@ -84,6 +88,13 @@ impl Backend for Github {
             asset,
             unpack_file,
         } = select(&releases, &config.asset)?;
+        if let Some(installed) = installed.filter(|installed| **installed >= version) {
+            log::info!(
+                "Newest release of {owner}/{repo} is {version} (tag {}), {installed} is installed",
+                release.tag_name
+            );
+            return Ok(None);
+        }
         log::info!(
             "Newest release of {owner}/{repo} is {version} (tag {}), downloading {}",
             release.tag_name,
@@ -106,7 +117,7 @@ impl Backend for Github {
             }
             _ => downloaded,
         };
-        Ok(Download { target, version })
+        Ok(Some(Download { target, version }))
     }
 }
 
@@ -623,16 +634,28 @@ mod tests {
         config.repository.url = "https://github.com/go-acme/lego/releases".to_owned();
         let dir = test_dir("lego");
 
-        let result = Github::download(&config, &dir);
+        let result = Github::download(&config, None, &dir);
         let size = result
             .as_ref()
             .ok()
+            .and_then(Option::as_ref)
             .map(|download| std::fs::metadata(&download.target).unwrap().len());
+
+        // Nothing is downloaded if the newest version is installed
+        let latest = result
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map(|download| download.version.clone());
+        let again = latest
+            .as_ref()
+            .map(|latest| Github::download(&config, Some(latest), &dir));
         std::fs::remove_dir_all(&dir).unwrap();
 
         // The extracted binary, not the archive
-        let download = result.unwrap();
+        let download = result.unwrap().unwrap();
         assert!(download.target.ends_with("lego"));
         assert!(size.unwrap() > 1024 * 1024, "unexpectedly small: {size:?}");
+        assert!(again.unwrap().unwrap().is_none());
     }
 }

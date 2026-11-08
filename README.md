@@ -6,22 +6,38 @@ GitHub). Each managed release is described by one TOML configuration file.
 ## Usage
 
 ```sh
-grm [--configs <DIR>] [-v...]
+grm [--configs <DIR>] [-v...] <COMMAND>
 ```
+
+| Command             | Description                                                    |
+| ------------------- | -------------------------------------------------------------- |
+| `list`              | List all packages with their installed versions.               |
+| `install <PACKAGE>` | Install the newest release of a package not installed yet.     |
+| `update`            | Update all installed packages to their newest releases.        |
+| `remove <PACKAGE>`  | Remove an installed package (its binary and recorded version). |
+
+A package is named after its installed binary (`name` in its configuration),
+so names must be unique. Its installed version is recorded in `data_dir`, and
+binaries are replaced atomically, so running programs are not affected. `grm`
+only replaces or removes binaries it installed itself: `install` fails if a
+file already exists at the installation path.
 
 | Option              | Description                                                   |
 | ------------------- | ------------------------------------------------------------- |
 | `-c, --configs DIR` | Directory containing the configuration files (`*.toml`).      |
 | `-v, --verbose`     | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace).    |
 
-`RUST_LOG` overrides the log level selected with `-v`.
+`-v` only affects messages of `grm` itself. Settings for modules in `RUST_LOG`
+take precedence (e.g. `RUST_LOG=grm=warn`) and can enable messages of
+dependencies (e.g. `RUST_LOG=ureq=debug`).
 
 If `GITHUB_TOKEN` is set, it is sent to the GitHub API (and only there). This
 raises GitHub's limit of 60 unauthenticated requests per hour and allows
 private repositories.
 
 `grm` exits with a non-zero status if the configuration directory cannot be
-read or any configuration file is invalid. Valid files are still processed.
+read, any configuration file is invalid, or any package fails. Valid files and
+the other packages are still processed.
 
 ## Configuration
 

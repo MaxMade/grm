@@ -40,6 +40,19 @@ impl Version {
         )
     }
 
+    /// Parses a version as written by its [`Display`] implementation, e.g.
+    /// `1.10.0`. Returns `None` if `s` is empty or has an empty part.
+    ///
+    /// Parts that contain `.` themselves cannot be told apart from separate
+    /// parts, but the result still orders the same way for numeric parts.
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<String> = s.split('.').map(str::to_owned).collect();
+        parts
+            .iter()
+            .all(|part| !part.is_empty())
+            .then_some(Self(parts))
+    }
+
     /// Compares two parts of a version (see [`Version`]).
     fn cmp_part(a: &str, b: &str) -> Ordering {
         // Only ASCII digits, so neither signs (as accepted by `parse`) nor
@@ -115,11 +128,18 @@ pub trait Backend {
     /// Downloads the file to install from the newest release of
     /// `config.repository` into `tmp_dir`, which must exist.
     ///
+    /// If `installed` is given and the newest release is not newer, nothing
+    /// is downloaded and `None` is returned.
+    ///
     /// `tmp_dir` must only be writable by the current user (e.g. created by
     /// `mkdtemp`), since files in it are created with predictable names.
     /// Existing files with these names are replaced, but symbolic links are
     /// never followed.
-    fn download<P: AsRef<Path>>(config: &Config, tmp_dir: P) -> Result<Download, Self::Error>;
+    fn download<P: AsRef<Path>>(
+        config: &Config,
+        installed: Option<&Version>,
+        tmp_dir: P,
+    ) -> Result<Option<Download>, Self::Error>;
 }
 
 /// Creates the file `path` for writing, replacing an existing file.
@@ -129,7 +149,7 @@ pub trait Backend {
 /// link itself, not its target), and the file is then created exclusively.
 /// If another process creates the file in between, this fails instead of
 /// writing to it.
-pub(super) fn create_file(path: &Path) -> io::Result<File> {
+pub(crate) fn create_file(path: &Path) -> io::Result<File> {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => {}
@@ -195,6 +215,17 @@ mod tests {
         assert!(version("1.2") < version("1.2.0"));
         assert!(version("1.2.0") > version("1.2"));
         assert!(version("1.3") > version("1.2.0"));
+    }
+
+    #[test]
+    fn parses_displayed_version() {
+        for s in ["1.10.0", "7", "1.2.x"] {
+            assert_eq!(Version::parse(s), Some(version(s)));
+            assert_eq!(Version::parse(s).unwrap().to_string(), s);
+        }
+        for s in ["", ".", "1..0", "1.2.", ".1"] {
+            assert_eq!(Version::parse(s), None, "{s:?}");
+        }
     }
 
     #[test]
