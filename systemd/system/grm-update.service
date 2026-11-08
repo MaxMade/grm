@@ -1,0 +1,60 @@
+# Updates all packages installed by grm as root, i.e. with the configurations
+# in /etc/grm, the binaries in /usr/local/bin and the records in
+# /var/lib/grm. Started by grm-update.timer; run it right away with
+# `systemctl start grm-update.service` and see the result with
+# `journalctl -u grm-update.service`.
+#
+# The service fails if any package cannot be updated (see `systemctl
+# --failed`); the other packages are still updated.
+
+[Unit]
+Description=Update packages installed by grm
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/grm update
+
+# Low priority, so that the update does not disturb other services
+Nice=10
+IOSchedulingClass=idle
+
+# Hardening: grm downloads and installs files from the internet, so it only
+# gets write access where it writes. If a configuration installs to a
+# directory other than /usr/local/bin (key `dir`), add that directory here.
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin
+# /var/lib/grm (data_dir) and /run/grm (runtime_dir, lock files). The latter
+# is kept after the service stops, since `grm` started by hand may hold a
+# lock in it.
+StateDirectory=grm
+RuntimeDirectory=grm
+RuntimeDirectoryPreserve=yes
+# A private /tmp for downloads, removed after the service stops
+PrivateTmp=yes
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+# Root needs no capabilities to write to directories it owns, which all of
+# the above are by default. If a configured directory is owned by another
+# user, writing to it fails; then remove this line.
+CapabilityBoundingSet=
+# Installed binaries must not be setuid or setgid (key `mode`), which would
+# let anyone who can publish a release gain root.
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0022

@@ -1,0 +1,31 @@
+# Runs `grm update` for the current user once a night (see
+# grm-update.service).
+#
+# Install as the user:
+#   mkdir -p ~/.config/systemd/user
+#   cp grm-update.service grm-update.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now grm-update.timer
+#
+# User timers only run while the user is logged in, unless lingering is
+# enabled: `loginctl enable-linger`. `systemctl --user list-timers
+# grm-update.timer` shows the next run.
+
+[Unit]
+Description=Nightly update of packages installed by grm
+
+[Timer]
+# Start between 01:00 and 05:00 local time: the randomized delay spreads the
+# requests of many machines over four hours instead of hitting GitHub and
+# Forgejo instances at the same moment.
+OnCalendar=*-*-* 01:00:00
+RandomizedDelaySec=4h
+# Derive the delay from the machine ID, the unit name and the user instead
+# of choosing it anew every night, so each machine (and user) keeps a stable
+# slot in the window, and they still spread evenly across it.
+FixedRandomDelay=true
+# Run after logging in if the machine was off at its time, e.g. a laptop.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

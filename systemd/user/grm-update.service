@@ -1,0 +1,24 @@
+# Updates all packages installed by grm for the current user, i.e. with the
+# configurations in ~/.config/grm, the binaries in ~/.local/bin and the
+# records in ~/.local/share/grm. Started by grm-update.timer; run it right
+# away with `systemctl --user start grm-update.service` and see the result
+# with `journalctl --user -u grm-update.service`.
+#
+# The service fails if any package cannot be updated (see `systemctl --user
+# --failed`); the other packages are still updated.
+
+[Unit]
+Description=Update packages installed by grm
+# network-online.target is a system unit, which user units cannot wait for;
+# a failed run is simply retried the next night.
+
+[Service]
+Type=oneshot
+# The location `cargo install` uses; adjust it if grm is installed elsewhere.
+ExecStart=%h/.cargo/bin/grm update
+
+# Low priority, so that the update does not disturb the session
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+UMask=0022

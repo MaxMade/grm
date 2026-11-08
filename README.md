@@ -78,6 +78,43 @@ All values are validated when loading, and unknown keys are rejected to catch
 typos. `runtime_dir` and `data_dir` are created if they do not exist.
 See [`configs/`](configs/) for examples.
 
+## Nightly updates
+
+[`systemd/`](systemd/) contains a service and a timer that run `grm update`
+once a night, at a time between 01:00 and 05:00. The time is random, but
+fixed per machine, so many machines spread their requests evenly over four
+hours instead of contacting GitHub and Forgejo at once. A night missed
+because the machine was off is caught up after booting.
+
+As root, for the packages configured in `/etc/grm` (expects `grm` in
+`/usr/local/bin`):
+
+```sh
+cp systemd/system/grm-update.* /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now grm-update.timer
+```
+
+The system service is sandboxed: it may only write to `/usr/local/bin`,
+`/var/lib/grm` and `/run/grm`, runs without capabilities, and cannot install
+setuid or setgid binaries. A configuration installing elsewhere (`dir`)
+needs that directory added to `ReadWritePaths=` in the service.
+
+As a user, for the packages configured in `~/.config/grm` (expects `grm` in
+`~/.cargo/bin`):
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp systemd/user/grm-update.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now grm-update.timer
+loginctl enable-linger   # to also run while not logged in
+```
+
+`systemctl [--user] list-timers grm-update.timer` shows the next run, and
+`journalctl [--user] -u grm-update.service` the results. The service fails
+if any package cannot be updated.
+
 ## Security
 
 Downloads use HTTPS only and must match the size reported by the hosting
